@@ -1,0 +1,21 @@
+[Unit]
+Description=PostgreSQL {{ postgres_version }} instance for database {{ postgres_db }} on port {{ postgres_port }}
+After=syslog.target network.target
+
+[Service]
+Type=forking
+User={{ postgres_user }}
+Group={{ postgres_group }}
+Environment=PGPORT={{ postgres_port }}
+Environment=PGDATA={{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}
+ExecStart={{ pg_bin_dir }}/pg_ctl start -D ${PGDATA} -s -o "-p ${PGPORT}" -w -t 300
+ExecStop={{ pg_bin_dir }}/pg_ctl stop -D ${PGDATA} -s -m fast
+ExecReload={{ pg_bin_dir }}/pg_ctl reload -D ${PGDATA} -s
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=300
+LimitNOFILE=65535
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,62 @@
+---
+- name: Install PostgreSQL 15 binaries and prepare custom service for ipldb
+  hosts: patroni_nodes
+  become: yes
+  vars_files:
+    - group_vars/all.yml
+    - host_vars/{{ inventory_hostname }}.yml
+
+  tasks:
+    - name: Disable default PostgreSQL module
+      command: dnf module disable postgresql -y
+      changed_when: true
+
+    - name: Add PGDG repository (PostgreSQL official repo)
+      dnf:
+        name: https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+        state: present
+        disable_gpg_check: yes
+
+    - name: Install PostgreSQL {{ postgres_version }} packages
+      dnf:
+        name:
+          - "postgresql{{ postgres_version }}"
+          - "postgresql{{ postgres_version }}-server"
+          - "postgresql{{ postgres_version }}-contrib"
+        state: present
+
+    - name: Create dynamic PostgreSQL data directory
+      file:
+        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}"
+        state: directory
+        owner: "{{ postgres_user }}"
+        group: "{{ postgres_group }}"
+        mode: '0700'
+
+    - name: Apply SELinux context to PostgreSQL data directory
+      command: "{{ item }}"
+      loop:
+        - semanage fcontext -a -t postgresql_db_t "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}(/.*)?"
+        - restorecon -Rv "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}"
+      changed_when: false
+
+    - name: Disable default PostgreSQL systemd service
+      systemd:
+        name: "postgresql-{{ postgres_version }}"
+        enabled: no
+        state: stopped
+      ignore_errors: yes
+
+    - name: Create custom PostgreSQL systemd service file
+      template:
+        src: postgresql-custom.service.j2
+        dest: "/etc/systemd/system/postgresql@{{ postgres_db }}.{{ postgres_port }}.service"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload systemd daemon
+
+  handlers:
+    - name: reload systemd daemon
+      systemd:
+        daemon_reload: yes

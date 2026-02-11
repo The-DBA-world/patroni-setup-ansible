@@ -37,7 +37,7 @@
         daemon_reload: yes
       when: my_role == "leader"
 
-    - name: Wait for PostgreSQL to be ready on leader
+    - name: Wait for PostgreSQL to accept connections on leader
       wait_for:
         host: "{{ inventory_hostname }}"
         port: "{{ postgres_port }}"
@@ -45,16 +45,16 @@
         timeout: 60
       when: my_role == "leader"
 
-    - name: Set basic postgresql.conf parameters
+    - name: Set basic postgresql.conf parameters on leader
       lineinfile:
         path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/postgresql.conf"
-        regexp: "^{{ item.key }} ="
+        regexp: "^{{ item.key }}\\s*="
         line: "{{ item.key }} = {{ item.value }}"
         create: yes
       loop:
         - { key: "listen_addresses", value: "'*'" }
         - { key: "max_connections", value: "100" }
-        - { key: "shared_buffers", value: "128MB" }
+        - { key: "shared_buffers", value: "{{ postgres_memory }}" }
         - { key: "wal_level", value: "replica" }
         - { key: "hot_standby", value: "on" }
         - { key: "max_wal_senders", value: "10" }
@@ -62,19 +62,18 @@
       notify: reload PostgreSQL config
       when: my_role == "leader"
 
-    - name: Configure pg_hba.conf for replication and local access
+    - name: Configure pg_hba.conf for replication and local access on leader
       blockinfile:
         path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/pg_hba.conf"
         block: |
-          # Local access
+          # Local access (trust for initial setup)
           local   all             all                                     trust
           host    all             all             127.0.0.1/32            trust
           host    all             all             ::1/128                 trust
-          # Replication
+          # Replication from replicas
           host    replication     {{ postgres_replication_username }}   192.168.1.0/24   md5
-          # All other hosts
+          # All other access (md5)
           host    all             all             192.168.1.0/24          md5
-        create: yes
         marker: "# {mark} ANSIBLE MANAGED BLOCK - replication & access"
       notify: reload PostgreSQL config
       when: my_role == "leader"

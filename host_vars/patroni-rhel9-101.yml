@@ -1,0 +1,31 @@
+---
+postgres_user: fast_patro_991
+postgres_group: postgres
+postgres_version: 15
+postgres_port: 15444
+postgres_env: test
+postgres_db: ipldb
+postgres_memory: "500MB"
+
+# PostgreSQL users and passwords
+postgres_superuser_username: postgres
+postgres_superuser_password: postgres
+postgres_replication_username: bot
+postgres_replication_password: bot
+
+# etcd
+etcd_data_dir: "/data/etcd"
+etcd_port_client: 2379
+etcd_port_peer: 2380
+
+# Patroni
+patroni_scope: "pgsql-cluster"
+patroni_rest_port: 8008
+
+# Cluster role info
+leader_host:
+  - patroni-rhel9-101
+
+replica_hosts:
+  - patroni-rhel9-102
+  - patroni-rhel9-103

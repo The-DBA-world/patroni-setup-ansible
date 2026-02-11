@@ -1,0 +1,13 @@
+---
+# Common defaults – only global settings remain here
+
+postgres_base_path: "/data"
+timezone: "Europe/Warsaw"
+
+pg_bin_dir: "/usr/pgsql-{{ postgres_version }}/bin"
+
+ansible_become: yes
+ansible_user: root
+
+# Dynamic role detection
+my_role: "{{ 'leader' if inventory_hostname in leader_host else 'replica' }}"

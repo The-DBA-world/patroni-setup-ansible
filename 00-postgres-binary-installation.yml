@@ -7,9 +7,24 @@
     - host_vars/{{ inventory_hostname }}.yml
 
   roles:
-    - postgresql-install   # ← this loads the template task from the role
+    - postgresql-install   # Loads the template task from role
 
   tasks:
+    - name: Create postgres group if not exists
+      group:
+        name: "{{ postgres_group }}"
+        state: present
+
+    - name: Create functional PostgreSQL user
+      user:
+        name: "{{ postgres_user }}"
+        group: "{{ postgres_group }}"
+        system: yes
+        shell: /sbin/nologin
+        home: /var/lib/postgresql
+        create_home: yes
+        state: present
+
     - name: Disable default PostgreSQL module
       command: dnf module disable postgresql -y
       changed_when: true

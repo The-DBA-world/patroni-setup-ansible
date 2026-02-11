@@ -1,0 +1,86 @@
+---
+- name: Initialize PostgreSQL database and enable custom service on leader only
+  hosts: patroni_nodes
+  become: yes
+  vars_files:
+    - group_vars/all.yml
+    - host_vars/{{ inventory_hostname }}.yml
+
+  tasks:
+    - name: Fail if run on more than one host
+      fail:
+        msg: "This playbook must be run with -l <hostname> (single host only)"
+      when: ansible_play_hosts | length > 1
+
+    - name: Check if database is already initialized
+      stat:
+        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/PG_VERSION"
+      register: pgdata_initialized
+
+    - name: Initialize PostgreSQL database (initdb) on leader only
+      command: "{{ pg_bin_dir }}/initdb -D {{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }} --encoding=UTF8 --locale=C"
+      become_user: "{{ postgres_user }}"
+      when: 
+        - my_role == "leader"
+        - not pgdata_initialized.stat.exists
+      register: initdb_result
+
+    - name: Show initdb result
+      debug:
+        msg: "{{ initdb_result.stdout | default('Database already initialized') }}"
+
+    - name: Enable and start custom PostgreSQL service on leader
+      systemd:
+        name: "postgresql@{{ postgres_db }}.{{ postgres_port }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      when: my_role == "leader"
+
+    - name: Wait for PostgreSQL to be ready on leader
+      wait_for:
+        host: "{{ inventory_hostname }}"
+        port: "{{ postgres_port }}"
+        delay: 5
+        timeout: 60
+      when: my_role == "leader"
+
+    - name: Set basic postgresql.conf parameters
+      lineinfile:
+        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/postgresql.conf"
+        regexp: "^{{ item.key }} ="
+        line: "{{ item.key }} = {{ item.value }}"
+        create: yes
+      loop:
+        - { key: "listen_addresses", value: "'*'" }
+        - { key: "max_connections", value: "100" }
+        - { key: "shared_buffers", value: "128MB" }
+        - { key: "wal_level", value: "replica" }
+        - { key: "hot_standby", value: "on" }
+        - { key: "max_wal_senders", value: "10" }
+        - { key: "max_replication_slots", value: "10" }
+      notify: reload PostgreSQL config
+      when: my_role == "leader"
+
+    - name: Configure pg_hba.conf for replication and local access
+      blockinfile:
+        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/pg_hba.conf"
+        block: |
+          # Local access
+          local   all             all                                     trust
+          host    all             all             127.0.0.1/32            trust
+          host    all             all             ::1/128                 trust
+          # Replication
+          host    replication     {{ postgres_replication_username }}   192.168.1.0/24   md5
+          # All other hosts
+          host    all             all             192.168.1.0/24          md5
+        create: yes
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - replication & access"
+      notify: reload PostgreSQL config
+      when: my_role == "leader"
+
+  handlers:
+    - name: reload PostgreSQL config
+      systemd:
+        name: "postgresql@{{ postgres_db }}.{{ postgres_port }}"
+        state: reloaded

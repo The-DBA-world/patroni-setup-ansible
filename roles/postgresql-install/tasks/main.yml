@@ -1,0 +1,9 @@
+---
+- name: Create custom PostgreSQL systemd service file (from role)
+  template:
+    src: postgresql-custom.service.j2
+    dest: "/etc/systemd/system/postgresql@{{ postgres_db }}.{{ postgres_port }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload systemd daemon

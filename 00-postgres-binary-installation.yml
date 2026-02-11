@@ -6,27 +6,15 @@
     - group_vars/all.yml
     - host_vars/{{ inventory_hostname }}.yml
 
+  roles:
+    - postgresql-install   # ← this loads the template task from the role
+
   tasks:
-    - name: Create postgres group if not exists
-      group:
-        name: "{{ postgres_group }}"
-        state: present
-
-    - name: Create functional PostgreSQL user
-      user:
-        name: "{{ postgres_user }}"
-        group: "{{ postgres_group }}"
-        system: yes
-        shell: /sbin/nologin
-        home: /var/lib/postgresql
-        create_home: yes
-        state: present
-
     - name: Disable default PostgreSQL module
       command: dnf module disable postgresql -y
       changed_when: true
 
-    - name: Add PGDG repository (PostgreSQL official repo)
+    - name: Add PGDG repository
       dnf:
         name: https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
         state: present
@@ -61,15 +49,6 @@
         enabled: no
         state: stopped
       ignore_errors: yes
-
-    - name: Create custom PostgreSQL systemd service file
-      template:
-        src: postgresql-custom.service.j2
-        dest: "/etc/systemd/system/postgresql@{{ postgres_db }}.{{ postgres_port }}.service"
-        owner: root
-        group: root
-        mode: '0644'
-      notify: reload systemd daemon
 
   handlers:
     - name: reload systemd daemon

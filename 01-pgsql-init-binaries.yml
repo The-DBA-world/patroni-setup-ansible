@@ -1,5 +1,5 @@
 ---
-- name: Initialize PostgreSQL database and enable custom service on leader only
+- name: Initialize PostgreSQL database cluster, create application DB, and enable custom service on leader only
   hosts: patroni_nodes
   become: yes
   vars_files:
@@ -12,12 +12,12 @@
         msg: "This playbook must be run with -l <hostname> (single host only)"
       when: ansible_play_hosts | length > 1
 
-    - name: Check if database is already initialized
+    - name: Check if database cluster is already initialized
       stat:
         path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/PG_VERSION"
       register: pgdata_initialized
 
-    - name: Initialize PostgreSQL database (initdb) on leader only
+    - name: Initialize PostgreSQL database cluster (initdb) on leader only
       command: "{{ pg_bin_dir }}/initdb -D {{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }} --encoding=UTF8 --locale=C"
       become_user: "{{ postgres_user }}"
       when: 
@@ -27,7 +27,33 @@
 
     - name: Show initdb result
       debug:
-        msg: "{{ initdb_result.stdout | default('Database already initialized') }}"
+        msg: "{{ initdb_result.stdout | default('Database cluster already initialized') }}"
+
+    - name: Create private sockets directory (to avoid /run permission issues)
+      file:
+        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/sockets"
+        state: directory
+        owner: "{{ postgres_user }}"
+        group: "{{ postgres_group }}"
+        mode: '0700'
+      when: my_role == "leader"
+
+    - name: Apply SELinux context to sockets directory
+      command: "{{ item }}"
+      loop:
+        - semanage fcontext -a -t postgresql_db_t "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/sockets(/.*)?"
+        - restorecon -Rv "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/sockets"
+      changed_when: false
+      when: my_role == "leader"
+
+    - name: Set unix_socket_directories to private dir in postgresql.conf
+      lineinfile:
+        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/postgresql.conf"
+        regexp: "^unix_socket_directories\\s*="
+        line: "unix_socket_directories = '{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/sockets'"
+        create: yes
+      notify: reload PostgreSQL config
+      when: my_role == "leader"
 
     - name: Enable and start custom PostgreSQL service on leader
       systemd:
@@ -42,41 +68,29 @@
         host: "{{ inventory_hostname }}"
         port: "{{ postgres_port }}"
         delay: 5
-        timeout: 60
+        timeout: 90
       when: my_role == "leader"
 
-    - name: Set basic postgresql.conf parameters on leader
-      lineinfile:
-        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/postgresql.conf"
-        regexp: "^{{ item.key }}\\s*="
-        line: "{{ item.key }} = {{ item.value }}"
-        create: yes
-      loop:
-        - { key: "listen_addresses", value: "'*'" }
-        - { key: "max_connections", value: "100" }
-        - { key: "shared_buffers", value: "{{ postgres_memory }}" }
-        - { key: "wal_level", value: "replica" }
-        - { key: "hot_standby", value: "on" }
-        - { key: "max_wal_senders", value: "10" }
-        - { key: "max_replication_slots", value: "10" }
-      notify: reload PostgreSQL config
+    - name: Create application database {{ postgres_db }} if not exists on leader
+      command: >
+        {{ pg_bin_dir }}/psql -p {{ postgres_port }} -U {{ postgres_superuser_username }} -d postgres -c 
+        "SELECT 1 FROM pg_database WHERE datname = '{{ postgres_db }}'" | grep -q 1 || 
+        {{ pg_bin_dir }}/psql -p {{ postgres_port }} -U {{ postgres_superuser_username }} -d postgres -c 
+        "CREATE DATABASE {{ postgres_db }} OWNER {{ postgres_user }};"
+      become_user: "{{ postgres_user }}"
+      when: my_role == "leader"
+      register: create_db_result
+
+    - name: Grant privileges on {{ postgres_db }} to functional user on leader
+      command: >
+        {{ pg_bin_dir }}/psql -p {{ postgres_port }} -U {{ postgres_superuser_username }} -d postgres -c 
+        "GRANT ALL PRIVILEGES ON DATABASE {{ postgres_db }} TO {{ postgres_user }};"
+      become_user: "{{ postgres_user }}"
       when: my_role == "leader"
 
-    - name: Configure pg_hba.conf for replication and local access on leader
-      blockinfile:
-        path: "{{ postgres_base_path }}/{{ postgres_env }}/postgres/{{ postgres_version }}/{{ postgres_db }}/pg_hba.conf"
-        block: |
-          # Local access (trust for initial setup)
-          local   all             all                                     trust
-          host    all             all             127.0.0.1/32            trust
-          host    all             all             ::1/128                 trust
-          # Replication from replicas
-          host    replication     {{ postgres_replication_username }}   192.168.1.0/24   md5
-          # All other access (md5)
-          host    all             all             192.168.1.0/24          md5
-        marker: "# {mark} ANSIBLE MANAGED BLOCK - replication & access"
-      notify: reload PostgreSQL config
-      when: my_role == "leader"
+    - name: Show database creation result
+      debug:
+        msg: "{{ create_db_result.stdout | default('Database already exists') }}"
 
   handlers:
     - name: reload PostgreSQL config
